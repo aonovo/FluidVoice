@@ -223,3 +223,6 @@ sample/
 .codex
 AGENTS.md
 builds/
+
+# Local Release builds (scripts/build-release.sh)
+dist/
