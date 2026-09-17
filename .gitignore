@@ -232,3 +232,8 @@ builds/
 !README.md
 !CONTRIBUTING.md
 !.github/pull_request_template.md
+!CHANGES.md
+!UPSTREAM-README.md
+
+# Local Release builds (scripts/build-release.sh)
+dist/
