@@ -360,8 +360,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             do {
                 // Use our tolerant updater to handle v-prefixed tags and 2-part versions
                 try await SimpleUpdater.shared.checkAndUpdate(
-                    owner: "altic-dev",
-                    repo: "Fluid-oss",
+                    owner: "aonovo",
+                    repo: "FluidVoice",
                     includePrerelease: includePrerelease
                 )
             } catch SimpleUpdateError.updateAlreadyInProgress {
@@ -409,8 +409,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             do {
                 let includePrerelease = SettingsStore.shared.betaReleasesEnabled
                 let result = try await SimpleUpdater.shared.checkForUpdate(
-                    owner: "altic-dev",
-                    repo: "Fluid-oss",
+                    owner: "aonovo",
+                    repo: "FluidVoice",
                     includePrerelease: includePrerelease
                 )
 
