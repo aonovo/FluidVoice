@@ -837,7 +837,7 @@ extension VoiceEngineSettingsView {
                     Text("Remove Filler Words")
                         .font(self.theme.typography.bodyStrong)
                         .foregroundStyle(self.voiceEngineTitleText)
-                    Text("Automatically remove filler sounds like 'um', 'uh', 'er' from transcriptions")
+                    Text("Drop filler words and phrases, hesitation sounds like 'um' or 'э-э', stuttered repeats and known recognizer hallucinations before the text is inserted.")
                         .font(self.theme.typography.bodySmall)
                         .foregroundStyle(self.voiceEngineSecondaryText)
                 }
@@ -851,9 +851,85 @@ extension VoiceEngineSettingsView {
             }
 
             if self.viewModel.removeFillerWordsEnabled {
+                self.speechCleanupOptions
                 FillerWordsEditor()
             }
         }
+    }
+
+    /// Built-in language rule packs and the extra cleanup passes of `SpeechCleanup`.
+    private var speechCleanupOptions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                Text("Language rules")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.voiceEngineSecondaryText)
+                ForEach(SpeechCleanup.LanguagePack.builtIn, id: \.id) { pack in
+                    Toggle(pack.displayName, isOn: self.languagePackBinding(pack.id))
+                        .toggleStyle(.checkbox)
+                        .font(self.theme.typography.bodySmall)
+                }
+                Spacer()
+            }
+            self.speechCleanupRow(
+                title: "Collapse repeated words",
+                description: "\"слово слово\" and \"the the\" become a single word.",
+                isOn: Binding(
+                    get: { self.settings.speechCleanupRemovesRepeatedWords },
+                    set: { self.settings.speechCleanupRemovesRepeatedWords = $0 }
+                )
+            )
+            self.speechCleanupRow(
+                title: "Drop recognizer hallucinations",
+                description: "Phrases Whisper-style models invent on silence, such as subtitle credits or music tags.",
+                isOn: Binding(
+                    get: { self.settings.speechCleanupRemovesHallucinations },
+                    set: { self.settings.speechCleanupRemovesHallucinations = $0 }
+                )
+            )
+            self.speechCleanupRow(
+                title: "Fix Latin letters inside Cyrillic words",
+                description: "Maps look-alike Latin letters back to Cyrillic in mostly-Cyrillic words; Latin words are left alone.",
+                isOn: Binding(
+                    get: { self.settings.speechCleanupFixesLatinInCyrillic },
+                    set: { self.settings.speechCleanupFixesLatinInCyrillic = $0 }
+                )
+            )
+        }
+        .padding(.top, 2)
+    }
+
+    private func speechCleanupRow(title: String, description: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.voiceEngineTitleText)
+                Text(description)
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.voiceEngineSecondaryText)
+            }
+            Spacer()
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .labelsHidden()
+        }
+    }
+
+    private func languagePackBinding(_ packID: String) -> Binding<Bool> {
+        Binding(
+            get: { self.settings.speechCleanupLanguagePackIDs.contains(packID) },
+            set: { enabled in
+                var packs = self.settings.speechCleanupLanguagePackIDs
+                if enabled {
+                    if !packs.contains(packID) { packs.append(packID) }
+                } else {
+                    packs.removeAll { $0 == packID }
+                }
+                self.settings.speechCleanupLanguagePackIDs = packs
+            }
+        )
     }
 
     // MARK: - Speech Model Logo View

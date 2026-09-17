@@ -94,6 +94,12 @@ struct SettingsBackupPayload: Codable, Equatable {
     let weekendsDontBreakStreak: Bool
     let fillerWords: [String]
     let removeFillerWordsEnabled: Bool
+    // Optional so backups created before speech cleanup still decode.
+    // swiftlint:disable:next discouraged_optional_collection
+    let speechCleanupLanguagePackIDs: [String]?
+    let speechCleanupRemovesRepeatedWords: Bool?
+    let speechCleanupRemovesHallucinations: Bool?
+    let speechCleanupFixesLatinInCyrillic: Bool?
     let autoConvertPunctuationEnabled: Bool?
     let literalDictationFormattingEnabled: Bool?
     let punctuationDictionaryPrefix: String?

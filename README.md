@@ -35,6 +35,29 @@ Implementation: `SystemAudioVolumeController` (CoreAudio, adapted from upstream
 [#955](https://github.com/altic-dev/FluidVoice/pull/955). Eleven unit tests cover the duck/restore
 paths.
 
+### Speech cleanup: fillers, hesitations, repeats, hallucinations
+
+Upstream's *Remove Filler Words* drops single words from a flat list ("um", "uh") and nothing
+else. This fork turns that step into a proper, deterministic cleanup that runs before the custom
+dictionary on every transcription path, with no language model involved:
+
+- **Language rule packs** (English and Russian so far, more welcome): multi-word fillers that are
+  never meaningful ("you know", "так сказать", "в общем-то") go wherever they occur; words that
+  are fillers only when set off by punctuation ("Ну, …", "…, вот, …", ", like,") go only there,
+  so "типа данных" and "I like this" survive; hesitation sounds ("umm", "э-э", "ммм") always go.
+- Commas that framed a removed filler go with it, and the next word is re-capitalized when the
+  filler opened a sentence: "Ну, в смысле, доступ добавился" → "В смысле, доступ добавился".
+- Stuttered repeats collapse ("мы мы сделали" → "мы сделали").
+- Phrases Whisper-style models hallucinate on silence are dropped ("Продолжение следует…",
+  "Субтитры создавал …", ALL-CAPS music tags, "Thanks for watching").
+- Latin look-alike letters inside mostly-Cyrillic words are mapped back ("попríятнее" →
+  "поприятнее"); Latin words and code are left alone.
+
+Settings → Voice Engine → **Remove Filler Words** keeps its toggle and custom word list (custom
+entries are removed anywhere) and gains per-language pack checkboxes plus switches for the three
+extra passes. The rules come from the author's earlier dictation app, LocalVox, and live in
+`Sources/Fluid/Services/SpeechCleanup.swift` with a test suite of real dictation samples.
+
 ### Automatic updates point at this fork
 
 Upstream's updater installs new GitHub releases automatically. In a fork that would silently replace

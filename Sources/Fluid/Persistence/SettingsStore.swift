@@ -3327,6 +3327,10 @@ final class SettingsStore: ObservableObject {
             weekendsDontBreakStreak: self.weekendsDontBreakStreak,
             fillerWords: self.fillerWords,
             removeFillerWordsEnabled: self.removeFillerWordsEnabled,
+            speechCleanupLanguagePackIDs: self.speechCleanupLanguagePackIDs,
+            speechCleanupRemovesRepeatedWords: self.speechCleanupRemovesRepeatedWords,
+            speechCleanupRemovesHallucinations: self.speechCleanupRemovesHallucinations,
+            speechCleanupFixesLatinInCyrillic: self.speechCleanupFixesLatinInCyrillic,
             autoConvertPunctuationEnabled: self.autoConvertPunctuationEnabled,
             literalDictationFormattingEnabled: self.literalDictationFormattingEnabled,
             punctuationDictionaryPrefix: self.punctuationDictionaryPrefix,
@@ -3494,6 +3498,18 @@ final class SettingsStore: ObservableObject {
         self.weekendsDontBreakStreak = payload.weekendsDontBreakStreak
         self.fillerWords = payload.fillerWords
         self.removeFillerWordsEnabled = payload.removeFillerWordsEnabled
+        if let packIDs = payload.speechCleanupLanguagePackIDs {
+            self.speechCleanupLanguagePackIDs = packIDs
+        }
+        if let repeated = payload.speechCleanupRemovesRepeatedWords {
+            self.speechCleanupRemovesRepeatedWords = repeated
+        }
+        if let hallucinations = payload.speechCleanupRemovesHallucinations {
+            self.speechCleanupRemovesHallucinations = hallucinations
+        }
+        if let latin = payload.speechCleanupFixesLatinInCyrillic {
+            self.speechCleanupFixesLatinInCyrillic = latin
+        }
         if let autoConvertPunctuationEnabled = payload.autoConvertPunctuationEnabled {
             self.autoConvertPunctuationEnabled = autoConvertPunctuationEnabled
         }
@@ -4180,6 +4196,61 @@ final class SettingsStore: ObservableObject {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.removeFillerWordsEnabled)
         }
+    }
+
+    // MARK: - Speech Cleanup
+
+    /// Built-in language packs whose filler, hesitation and hallucination rules apply.
+    var speechCleanupLanguagePackIDs: [String] {
+        get {
+            if let stored = self.defaults.array(forKey: Keys.speechCleanupLanguagePackIDs) as? [String] {
+                return stored
+            }
+            return SpeechCleanup.LanguagePack.builtIn.map(\.id)
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.speechCleanupLanguagePackIDs)
+        }
+    }
+
+    /// Collapses stuttered repeats ("слово слово" → "слово").
+    var speechCleanupRemovesRepeatedWords: Bool {
+        get { self.defaults.object(forKey: Keys.speechCleanupRemovesRepeatedWords) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.speechCleanupRemovesRepeatedWords)
+        }
+    }
+
+    /// Drops phrases recognizers hallucinate on silence ("Продолжение следует…", music tags).
+    var speechCleanupRemovesHallucinations: Bool {
+        get { self.defaults.object(forKey: Keys.speechCleanupRemovesHallucinations) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.speechCleanupRemovesHallucinations)
+        }
+    }
+
+    /// Maps Latin look-alike letters back to Cyrillic inside mostly-Cyrillic words.
+    var speechCleanupFixesLatinInCyrillic: Bool {
+        get { self.defaults.object(forKey: Keys.speechCleanupFixesLatinInCyrillic) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.speechCleanupFixesLatinInCyrillic)
+        }
+    }
+
+    /// Everything `SpeechCleanup` needs, gated by the Remove Filler Words toggle.
+    var speechCleanupOptions: SpeechCleanup.Options {
+        SpeechCleanup.Options(
+            isEnabled: self.removeFillerWordsEnabled,
+            customFillers: self.fillerWords,
+            languagePackIDs: Set(self.speechCleanupLanguagePackIDs),
+            removesRepeatedWords: self.speechCleanupRemovesRepeatedWords,
+            removesHallucinations: self.speechCleanupRemovesHallucinations,
+            fixesLatinInCyrillic: self.speechCleanupFixesLatinInCyrillic
+        )
     }
 
     var autoConvertPunctuationEnabled: Bool {
@@ -5551,6 +5622,10 @@ private extension SettingsStore {
         // Filler Words
         static let fillerWords = "FillerWords"
         static let removeFillerWordsEnabled = "RemoveFillerWordsEnabled"
+        static let speechCleanupLanguagePackIDs = "SpeechCleanupLanguagePackIDs"
+        static let speechCleanupRemovesRepeatedWords = "SpeechCleanupRemovesRepeatedWords"
+        static let speechCleanupRemovesHallucinations = "SpeechCleanupRemovesHallucinations"
+        static let speechCleanupFixesLatinInCyrillic = "SpeechCleanupFixesLatinInCyrillic"
         static let autoConvertPunctuationEnabled = "AutoConvertPunctuationEnabled"
         static let literalDictationFormattingEnabled = "LiteralDictationFormattingEnabled"
         static let punctuationDictionaryPrefix = "PunctuationDictionaryPrefix"

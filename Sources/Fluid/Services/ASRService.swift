@@ -5743,18 +5743,10 @@ final class ASRService: ObservableObject {
         return outcome
     }
 
-    /// Removes filler sounds from transcribed text
+    /// Removes filler words and phrases, hesitation sounds, stuttered repeats and known
+    /// recognizer hallucinations from transcribed text. See `SpeechCleanup`.
     static func removeFillerWords(_ text: String) -> String {
-        guard SettingsStore.shared.removeFillerWordsEnabled else { return text }
-
-        let fillers = Set(SettingsStore.shared.fillerWords.map { $0.lowercased() })
-
-        let words = text.split(separator: " ", omittingEmptySubsequences: true)
-        let filtered = words.filter { word in
-            !fillers.contains(word.lowercased().trimmingCharacters(in: .punctuationCharacters))
-        }
-
-        return filtered.joined(separator: " ")
+        SpeechCleanup.apply(text, options: SettingsStore.shared.speechCleanupOptions)
     }
 
     // MARK: - Custom Dictionary (Cached Regex)
