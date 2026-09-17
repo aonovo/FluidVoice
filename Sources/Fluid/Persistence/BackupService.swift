@@ -109,6 +109,9 @@ struct SettingsBackupPayload: Codable, Equatable {
     let continuousDictationSpacingEnabled: Bool?
     let contextAwareCapitalizationEnabled: Bool?
     let pauseMediaDuringTranscription: Bool
+    // Optional so backups created before volume ducking still decode.
+    let duckMediaInsteadOfPausing: Bool?
+    let duckMediaVolumeLevel: Double?
     let automaticDictionaryLearningEnabled: Bool?
     let automaticDictionarySuggestionFrequency: SettingsStore.AutomaticDictionarySuggestionFrequency?
     let pronunciationMatchingEnabled: Bool?

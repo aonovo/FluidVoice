@@ -957,6 +957,9 @@ struct SettingsView: View {
                                         )
                                     )
                                     .settingsSearchTarget(.pauseMedia)
+
+                                    self.duckMediaOptions
+
                                     Divider().opacity(0.2)
 
                                     DictionarySuggestionsSettingsRow()
@@ -2967,6 +2970,55 @@ private struct DictionarySuggestionsSettingsRow: View {
             .toggleStyle(.switch)
             .tint(self.theme.palette.accent)
             .labelsHidden()
+        }
+    }
+}
+
+private extension SettingsView {
+    /// Sub-options for "Pause Media During Transcription" — the volume-ducking
+    /// toggle and its level slider, shown only while media pausing is enabled.
+    @ViewBuilder var duckMediaOptions: some View {
+        if self.settings.pauseMediaDuringTranscription {
+            VStack(alignment: .leading, spacing: 10) {
+                self.optionToggleRow(
+                    title: "Lower Volume Instead of Pausing",
+                    description: "Fade currently playing audio down to a quieter level while you dictate and bring it back the moment recording stops — instead of pausing playback. Affects overall system output volume.",
+                    isOn: Binding(
+                        get: { SettingsStore.shared.duckMediaInsteadOfPausing },
+                        set: { SettingsStore.shared.duckMediaInsteadOfPausing = $0 }
+                    )
+                )
+                .settingsSearchTarget(.duckMedia)
+
+                if self.settings.duckMediaInsteadOfPausing {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Volume While Dictating")
+                                .font(self.theme.typography.bodyStrong)
+                                .foregroundStyle(self.settingsTitleText)
+                            Text("Fraction of the current volume to keep while recording.")
+                                .font(self.theme.typography.bodySmall)
+                                .foregroundStyle(self.settingsSecondaryText)
+                        }
+
+                        Spacer()
+
+                        HStack(spacing: 6) {
+                            Slider(value: self.$settings.duckMediaVolumeLevel, in: 0.05...1.0, step: 0.05)
+                                .frame(width: 110)
+                                .controlSize(.small)
+
+                            Text("\(Int((self.settings.duckMediaVolumeLevel * 100).rounded()))%")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(self.settingsSecondaryText)
+                                .frame(width: 44, alignment: .trailing)
+                        }
+                        .frame(width: 160, alignment: .trailing)
+                    }
+                }
+            }
+            .padding(.leading, 16)
+            .padding(.top, 2)
         }
     }
 }

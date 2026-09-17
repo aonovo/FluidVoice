@@ -2262,7 +2262,7 @@ final class ASRService: ObservableObject {
         defer { self.pendingMediaCaptureSessionID = nil }
         self.mediaPlaybackService.recordingStarted(
             sessionID: captureSessionID,
-            enabled: SettingsStore.shared.pauseMediaDuringTranscription
+            suppression: SettingsStore.shared.mediaSuppressionDuringTranscription
         )
         self.audioCaptureAttemptID &+= 1
         var readinessAttemptID = self.audioCaptureAttemptID
