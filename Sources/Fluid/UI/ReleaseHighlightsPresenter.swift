@@ -43,7 +43,8 @@ struct ReleaseHighlightsPresenter: ViewModifier {
     private let highlights = ReleaseHighlightsContent.current(hasPrivateAI: PrivateAIProviderFeature.shared.isAvailable)
     private let coordinator = ReleaseHighlightsCoordinator.shared
 
-    private final class WindowReference { weak var window: NSWindow? }
+    // nonisolated: a MainActor deinit goes through the back-deploy shim that crashes before macOS 26 (swiftlang/swift#85663).
+    private nonisolated final class WindowReference { weak var window: NSWindow? }
 
     private var canExplore: Bool { self.isEligible && !self.processing && !self.refining }
 
