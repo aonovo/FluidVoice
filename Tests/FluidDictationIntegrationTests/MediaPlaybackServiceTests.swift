@@ -1,3 +1,4 @@
+import CoreAudio
 @testable import FluidVoice_Debug
 import Foundation
 import XCTest
@@ -551,6 +552,198 @@ final class MediaPlaybackServiceTests: XCTestCase {
         XCTAssertTrue(result.output.isEmpty)
     }
 
+    // MARK: - Ducking
+
+    func testDuckFadesOutputVolumeWithoutMediaCommandsAndRestoresOnStop() async {
+        let transport = FakeMediaPlaybackTransport([self.state(true)])
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(transport, volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.captureCount, 1)
+        self.assertLevels(volume.current, [0.2, 0.1])
+        XCTAssertEqual(volume.applied.count, MediaPlaybackService.duckRampSteps)
+        let queries = await transport.queryCount
+        XCTAssertEqual(queries, 0)
+
+        service.recordingStopped(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.8, 0.4])
+        XCTAssertEqual(volume.applied.count, 2 * MediaPlaybackService.duckRampSteps)
+
+        service.sessionFinished(sessionID: 1)
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.applied.count, 2 * MediaPlaybackService.duckRampSteps)
+        let commands = await transport.commands
+        XCTAssertTrue(commands.isEmpty)
+    }
+
+    func testDuckFadeMovesMonotonicallyTowardTarget() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([1.0]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.2))
+        await service.waitUntilSettled()
+        let written = volume.applied.map { $0.channels[0].volume }
+        XCTAssertEqual(written.last ?? -1, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(written, written.sorted(by: >))
+        XCTAssertEqual(Set(written).count, written.count)
+    }
+
+    func testDuckLeavesUserAdjustedVolumeAlone() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        let writesAfterDuck = volume.applied.count
+
+        volume.current = self.levels([0.6, 0.3])
+        service.recordingStopped(sessionID: 1)
+        service.sessionFinished(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.6, 0.3])
+        XCTAssertEqual(volume.applied.count, writesAfterDuck)
+    }
+
+    func testDuckRespectsUserMute() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        let writesAfterDuck = volume.applied.count
+
+        volume.current = self.levels([0, 0])
+        service.recordingStopped(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0, 0])
+        XCTAssertEqual(volume.applied.count, writesAfterDuck)
+    }
+
+    func testDuckFallsBackToPauseWhenOutputVolumeIsUnavailable() async {
+        let transport = FakeMediaPlaybackTransport([self.state(true), self.state(false), self.state(false), self.state(true)])
+        let volume = FakeSystemAudioVolumeController(current: nil)
+        let service = self.service(transport, volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        service.recordingStopped(sessionID: 1)
+        service.sessionFinished(sessionID: 1)
+        await service.waitUntilSettled()
+        let commands = await transport.commands
+        XCTAssertEqual(commands, [.pause, .play])
+        XCTAssertTrue(volume.applied.isEmpty)
+    }
+
+    func testFailedDuckIsUndoneAndFallsBackToPause() async {
+        let transport = FakeMediaPlaybackTransport([self.state(true), self.state(false)])
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        volume.applyOutcomes = Array(repeating: .failed, count: MediaPlaybackService.duckRampSteps)
+        let service = self.service(transport, volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.8, 0.4])
+        let commands = await transport.commands
+        XCTAssertEqual(commands, [.pause])
+        let writesAfterFallback = volume.applied.count
+
+        service.recordingStopped(sessionID: 1)
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.applied.count, writesAfterFallback)
+    }
+
+    func testSecondRecordingDuringUnrestoredDuckKeepsOriginalVolume() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        service.recordingStarted(sessionID: 2, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.captureCount, 1)
+        self.assertLevels(volume.current, [0.2, 0.1])
+
+        service.recordingStopped(sessionID: 2)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.8, 0.4])
+    }
+
+    func testSessionFinishedWithoutStopRestoresDuck() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        service.sessionFinished(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.8, 0.4])
+    }
+
+    func testShutdownRestoresDuckedVolumeAndRejectsNewStarts() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        await service.shutdown()
+        self.assertLevels(volume.current, [0.8, 0.4])
+        service.recordingStarted(sessionID: 2, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.captureCount, 1)
+    }
+
+    func testDisabledSuppressionDoesNotTouchVolume() async {
+        let transport = FakeMediaPlaybackTransport([self.state(true)])
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(transport, volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .none)
+        await service.waitUntilSettled()
+        service.recordingStopped(sessionID: 1)
+        service.sessionFinished(sessionID: 1)
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.captureCount, 0)
+        let queries = await transport.queryCount
+        XCTAssertEqual(queries, 0)
+    }
+
+    func testLegacyEnabledFlagStillPauses() async {
+        let transport = FakeMediaPlaybackTransport([self.state(true), self.state(false)])
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(transport, volume: volume)
+        service.recordingStarted(sessionID: 1, enabled: true)
+        await service.waitUntilSettled()
+        let commands = await transport.commands
+        XCTAssertEqual(commands, [.pause])
+        XCTAssertEqual(volume.captureCount, 0)
+    }
+
+    private func service(
+        _ transport: FakeMediaPlaybackTransport,
+        volume: FakeSystemAudioVolumeController
+    ) -> MediaPlaybackService {
+        MediaPlaybackService(transport: transport, volumeController: volume, settle: {}, rampStep: {}, now: { 0 })
+    }
+
+    private func levels(_ volumes: [Float]) -> OutputVolumeSnapshot {
+        OutputVolumeSnapshot(
+            deviceID: 42,
+            channels: volumes.enumerated().map { index, volume in
+                .init(
+                    selector: kAudioDevicePropertyVolumeScalar,
+                    element: AudioObjectPropertyElement(index + 1),
+                    volume: volume
+                )
+            }
+        )
+    }
+
+    private func assertLevels(
+        _ snapshot: OutputVolumeSnapshot?,
+        _ expected: [Float],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let actual = snapshot?.channels.map(\.volume) ?? []
+        XCTAssertEqual(actual.count, expected.count, "channel count", file: file, line: line)
+        for (value, target) in zip(actual, expected) {
+            XCTAssertEqual(value, target, accuracy: 0.0001, file: file, line: line)
+        }
+    }
+
     private func service(_ transport: FakeMediaPlaybackTransport) -> MediaPlaybackService {
         MediaPlaybackService(transport: transport, settle: {}, now: { 0 })
     }
@@ -625,6 +818,44 @@ private actor FakeMediaPlaybackTransport: MediaPlaybackTransport {
     func waitForCommand(_ count: Int) async {
         guard self.commands.count < count else { return }
         await withCheckedContinuation { self.commandWaiter = (count, $0) }
+    }
+}
+
+/// Simulates an output device: `current` is what capture and reread return, and every
+/// successful apply moves it. Queue `applyOutcomes` to make writes fail.
+private final nonisolated class FakeSystemAudioVolumeController: SystemAudioVolumeControlling {
+    var current: OutputVolumeSnapshot?
+    var applyOutcomes: [SystemAudioVolumeController.ApplyOutcome] = []
+    private(set) var captureCount = 0
+    private(set) var applied: [OutputVolumeSnapshot] = []
+    private(set) var virtualMainLevels: [Float] = []
+
+    init(current: OutputVolumeSnapshot?) {
+        self.current = current
+    }
+
+    func captureOutputVolume() -> OutputVolumeSnapshot? {
+        self.captureCount += 1
+        return self.current
+    }
+
+    func apply(_ snapshot: OutputVolumeSnapshot) -> SystemAudioVolumeController.ApplyOutcome {
+        self.applied.append(snapshot)
+        let outcome = self.applyOutcomes.isEmpty ? .applied : self.applyOutcomes.removeFirst()
+        if outcome == .applied {
+            self.current = snapshot
+        }
+        return outcome
+    }
+
+    func applyVirtualMainVolume(_ snapshot: OutputVolumeSnapshot) -> Bool {
+        self.virtualMainLevels.append(snapshot.averageLevel)
+        self.current = snapshot
+        return true
+    }
+
+    func reread(_ snapshot: OutputVolumeSnapshot) -> OutputVolumeSnapshot? {
+        self.current
     }
 }
 
