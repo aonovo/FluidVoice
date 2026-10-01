@@ -332,7 +332,7 @@ enum SettingsSearchIndex {
         .init(
             target: .duckMedia,
             title: "Lower Volume Instead of Pausing",
-            terms: ["duck ducking quieter music audio system output volume level dictation"]
+            terms: ["duck ducking quieter music audio system output volume level dictation headphones speakers"]
         ),
         .init(
             target: .dictionarySuggestions,
