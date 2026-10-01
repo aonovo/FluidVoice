@@ -3102,7 +3102,8 @@ private extension SettingsView {
             VStack(alignment: .leading, spacing: 10) {
                 self.optionToggleRow(
                     title: "Lower Volume Instead of Pausing",
-                    description: "Fade currently playing audio down to a quieter level while you dictate and bring it back the moment recording stops — instead of pausing playback. Affects overall system output volume.",
+                    description: "Fade currently playing audio down to a quieter level while you dictate and bring it back the moment recording stops — instead of pausing playback. Affects overall system output volume. " +
+                        "Best with headphones: on speakers the quieter audio can still reach the microphone.",
                     isOn: Binding(
                         get: { SettingsStore.shared.duckMediaInsteadOfPausing },
                         set: { SettingsStore.shared.duckMediaInsteadOfPausing = $0 }
