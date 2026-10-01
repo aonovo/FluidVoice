@@ -37,13 +37,17 @@ final class MediaPlaybackService {
 
     /// The output volume we lowered. `original` is what gets restored; `applied` is what
     /// the device actually snapped to and is compared on restore to detect a user change.
+    /// `applied` is `nil` when that level is unknown (the device could not be re-read, or
+    /// a failed duck could not be undone); the restore then runs unconditionally rather
+    /// than mistaking the device's quantization for a user change.
     private struct DuckedVolume {
         let original: OutputVolumeSnapshot
-        let applied: OutputVolumeSnapshot
+        let applied: OutputVolumeSnapshot?
     }
 
     private let transport: any MediaPlaybackTransport
-    private let volumeController: any SystemAudioVolumeControlling
+    /// CoreAudio volume calls run on the worker's own queue, never on the main actor.
+    private let volumeWorker: OutputVolumeWorker
     private let settle: @Sendable () async -> Void
     private let rampStep: @Sendable () async -> Void
     private let now: @Sendable () -> TimeInterval
@@ -68,7 +72,7 @@ final class MediaPlaybackService {
         now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.transport = transport
-        self.volumeController = volumeController
+        self.volumeWorker = OutputVolumeWorker(controller: volumeController)
         self.settle = settle
         self.rampStep = rampStep
         self.now = now
@@ -180,11 +184,14 @@ final class MediaPlaybackService {
         if let ducked = self.duckedVolume {
             // The previous session's duck has not been restored yet (its stop is still in
             // flight). Keep it rather than capturing the ducked level as the "original".
-            self.log("duck_retained session=\(sessionID) reason=already_owned level=\(ducked.applied.averageLevel)")
+            self.log(
+                "duck_retained session=\(sessionID) reason=already_owned " +
+                    "level=\(ducked.applied.map { String($0.averageLevel) } ?? "unknown")"
+            )
             return true
         }
         let started = self.now()
-        guard let original = self.volumeController.captureOutputVolume() else {
+        guard let original = await self.volumeWorker.captureOutputVolume() else {
             self.log("duck_skipped session=\(sessionID) reason=no_settable_output_volume")
             return false
         }
@@ -192,18 +199,28 @@ final class MediaPlaybackService {
         let outcome = await self.ramp(from: original, to: target)
         guard outcome == .applied else {
             // Undo whatever landed so the device is not left in a mixed state.
-            if self.volumeController.apply(original) != .applied {
-                _ = self.volumeController.applyVirtualMainVolume(original)
+            if await self.volumeWorker.apply(original) != .applied,
+               await self.volumeWorker.applyVirtualMainVolume(original) == false
+            {
+                // Some channels may still sit at a ducked level. Keep the original as
+                // owed so the stop/finish restore tries again.
+                self.duckedVolume = DuckedVolume(original: original, applied: nil)
+                self.log("duck_undo_failed session=\(sessionID) restore=pending")
             }
             self.log("duck_failed session=\(sessionID) outcome=\(outcome)")
             return false
         }
         // Re-read what the device actually snapped to (volume can be quantized to
-        // coarse steps) so the restore-time change check is accurate.
-        let applied = self.volumeController.reread(target) ?? target
+        // coarse steps) so the restore-time change check is accurate. One retry covers
+        // a transient read failure; after that the applied level is recorded as unknown.
+        var applied = await self.volumeWorker.reread(target)
+        if applied == nil {
+            applied = await self.volumeWorker.reread(target)
+        }
         self.duckedVolume = DuckedVolume(original: original, applied: applied)
         self.log(
-            "duck_applied session=\(sessionID) from=\(original.averageLevel) to=\(applied.averageLevel) " +
+            "duck_applied session=\(sessionID) from=\(original.averageLevel) " +
+                "to=\(applied.map { String($0.averageLevel) } ?? "unknown") " +
                 "elapsedMs=\(self.elapsedMilliseconds(since: started))"
         )
         return true
@@ -215,14 +232,14 @@ final class MediaPlaybackService {
         guard let ducked = self.duckedVolume else { return }
         self.duckedVolume = nil
         let started = self.now()
-        guard let current = self.volumeController.reread(ducked.applied) else {
+        guard let current = await self.volumeWorker.reread(ducked.original) else {
             self.log("duck_restore_skipped context=\(context) reason=device_unavailable")
             return
         }
-        if Self.userChangedVolume(current, from: ducked.applied) {
+        if let applied = ducked.applied, Self.userChangedVolume(current, from: applied) {
             self.log(
                 "duck_restore_skipped context=\(context) reason=user_changed_volume " +
-                    "from=\(ducked.applied.averageLevel) to=\(current.averageLevel)"
+                    "from=\(applied.averageLevel) to=\(current.averageLevel)"
             )
             return
         }
@@ -231,7 +248,7 @@ final class MediaPlaybackService {
                 "duck_restored context=\(context) level=\(ducked.original.averageLevel) " +
                     "elapsedMs=\(self.elapsedMilliseconds(since: started))"
             )
-        } else if self.volumeController.applyVirtualMainVolume(ducked.original) {
+        } else if await self.volumeWorker.applyVirtualMainVolume(ducked.original) {
             // Some or all raw channel writes failed. The HAL virtual main volume keeps a
             // channel from staying stuck at the ducked level.
             self.log("duck_restored context=\(context) via=virtual_main_volume")
@@ -250,10 +267,11 @@ final class MediaPlaybackService {
         let steps = self.isShuttingDown ? 1 : Self.duckRampSteps
         for step in 1..<max(steps, 1) {
             let fraction = Float(step) / Float(steps)
-            guard self.volumeController.apply(start.interpolated(toward: end, fraction: fraction)) == .applied else { break }
+            let step = start.interpolated(toward: end, fraction: fraction)
+            guard await self.volumeWorker.apply(step) == .applied else { break }
             await self.rampStep()
         }
-        return self.volumeController.apply(end)
+        return await self.volumeWorker.apply(end)
     }
 
     private static func userChangedVolume(
