@@ -219,6 +219,52 @@ nonisolated struct SystemAudioVolumeController: SystemAudioVolumeControlling {
     }
 }
 
+/// Diagnostics-only wrapper that logs how long each CoreAudio call takes and which
+/// thread ran it, so the cost of ducking next to microphone startup can be measured.
+nonisolated struct TimedSystemAudioVolumeController: SystemAudioVolumeControlling {
+    let base: any SystemAudioVolumeControlling
+
+    /// The production controller, wrapped with per-call timing when diagnostics are compiled in.
+    static func makeDefault() -> any SystemAudioVolumeControlling {
+        let controller = SystemAudioVolumeController()
+        return DebugLogger.diagnosticsEnabled ? Self(base: controller) : controller
+    }
+
+    func captureOutputVolume() -> OutputVolumeSnapshot? {
+        self.measure("capture", { $0 == nil ? "nil" : "ok" }) { self.base.captureOutputVolume() }
+    }
+
+    func apply(_ snapshot: OutputVolumeSnapshot) -> SystemAudioVolumeController.ApplyOutcome {
+        self.measure("apply", { "\($0)" }) { self.base.apply(snapshot) }
+    }
+
+    func applyVirtualMainVolume(_ snapshot: OutputVolumeSnapshot) -> Bool {
+        self.measure("apply_virtual_main", { "\($0)" }) { self.base.applyVirtualMainVolume(snapshot) }
+    }
+
+    func reread(_ snapshot: OutputVolumeSnapshot) -> OutputVolumeSnapshot? {
+        self.measure("reread", { $0 == nil ? "nil" : "ok" }) { self.base.reread(snapshot) }
+    }
+
+    private func measure<Result>(
+        _ operation: String,
+        _ describe: (Result) -> String,
+        _ body: () -> Result
+    ) -> Result {
+        let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        let result = body()
+        let elapsedMicroseconds = (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1000
+        let outcome = describe(result)
+        let mainThread = Thread.isMainThread
+        DebugLogger.shared.benchmark(
+            "MEDIA_BENCH",
+            message: "coreaudio op=\(operation) result=\(outcome) us=\(elapsedMicroseconds) mainThread=\(mainThread)",
+            source: "MediaPlaybackService"
+        )
+        return result
+    }
+}
+
 /// An immutable capture of an output device's volume — either its main element or
 /// its individual stereo channels — so a duck can be reverted without losing the
 /// device's original per-channel (left/right) balance.

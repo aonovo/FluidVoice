@@ -58,7 +58,7 @@ final class MediaPlaybackService {
 
     init(
         transport: any MediaPlaybackTransport,
-        volumeController: any SystemAudioVolumeControlling = SystemAudioVolumeController(),
+        volumeController: any SystemAudioVolumeControlling = TimedSystemAudioVolumeController.makeDefault(),
         settle: @escaping @Sendable () async -> Void = {
             try? await Task.sleep(nanoseconds: 150_000_000)
         },
@@ -183,6 +183,7 @@ final class MediaPlaybackService {
             self.log("duck_retained session=\(sessionID) reason=already_owned level=\(ducked.applied.averageLevel)")
             return true
         }
+        let started = self.now()
         guard let original = self.volumeController.captureOutputVolume() else {
             self.log("duck_skipped session=\(sessionID) reason=no_settable_output_volume")
             return false
@@ -201,7 +202,10 @@ final class MediaPlaybackService {
         // coarse steps) so the restore-time change check is accurate.
         let applied = self.volumeController.reread(target) ?? target
         self.duckedVolume = DuckedVolume(original: original, applied: applied)
-        self.log("duck_applied session=\(sessionID) from=\(original.averageLevel) to=\(applied.averageLevel)")
+        self.log(
+            "duck_applied session=\(sessionID) from=\(original.averageLevel) to=\(applied.averageLevel) " +
+                "elapsedMs=\(self.elapsedMilliseconds(since: started))"
+        )
         return true
     }
 
@@ -210,6 +214,7 @@ final class MediaPlaybackService {
     private func restoreDuckedVolume(context: String) async {
         guard let ducked = self.duckedVolume else { return }
         self.duckedVolume = nil
+        let started = self.now()
         guard let current = self.volumeController.reread(ducked.applied) else {
             self.log("duck_restore_skipped context=\(context) reason=device_unavailable")
             return
@@ -222,7 +227,10 @@ final class MediaPlaybackService {
             return
         }
         if await self.ramp(from: current, to: ducked.original) == .applied {
-            self.log("duck_restored context=\(context) level=\(ducked.original.averageLevel)")
+            self.log(
+                "duck_restored context=\(context) level=\(ducked.original.averageLevel) " +
+                    "elapsedMs=\(self.elapsedMilliseconds(since: started))"
+            )
         } else if self.volumeController.applyVirtualMainVolume(ducked.original) {
             // Some or all raw channel writes failed. The HAL virtual main volume keeps a
             // channel from staying stuck at the ducked level.
@@ -414,6 +422,10 @@ final class MediaPlaybackService {
             self.log("query_unavailable context=\(context) elapsedMs=\(elapsed) reason=\(reason)")
             return nil
         }
+    }
+
+    private func elapsedMilliseconds(since started: TimeInterval) -> Int {
+        Int(((self.now() - started) * 1000).rounded())
     }
 
     private func backOff(context: String) {
