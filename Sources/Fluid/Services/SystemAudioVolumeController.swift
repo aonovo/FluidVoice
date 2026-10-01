@@ -2,7 +2,9 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 
-nonisolated protocol SystemAudioVolumeControlling {
+/// Synchronous CoreAudio volume access. Calls can block while the HAL talks to the
+/// device, so `MediaPlaybackService` only reaches it through `OutputVolumeWorker`.
+nonisolated protocol SystemAudioVolumeControlling: Sendable {
     func captureOutputVolume() -> OutputVolumeSnapshot?
     func apply(_ snapshot: OutputVolumeSnapshot) -> SystemAudioVolumeController.ApplyOutcome
     func applyVirtualMainVolume(_ snapshot: OutputVolumeSnapshot) -> Bool
@@ -216,6 +218,38 @@ nonisolated struct SystemAudioVolumeController: SystemAudioVolumeControlling {
         var newVolume = max(0.0, min(1.0, volume))
         let size = UInt32(MemoryLayout<Float>.size)
         return AudioObjectSetPropertyData(device, &address, 0, nil, size, &newVolume) == noErr
+    }
+}
+
+/// Runs every volume read and write on one dedicated serial queue, keeping CoreAudio
+/// property calls off the main actor (which also drives microphone startup) and off
+/// the cooperative pool that transcription work runs on.
+nonisolated actor OutputVolumeWorker {
+    private let controller: any SystemAudioVolumeControlling
+    private let queue = DispatchSerialQueue(label: "com.fluidvoice.output-volume", qos: .userInitiated)
+
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        self.queue.asUnownedSerialExecutor()
+    }
+
+    init(controller: any SystemAudioVolumeControlling) {
+        self.controller = controller
+    }
+
+    func captureOutputVolume() -> OutputVolumeSnapshot? {
+        self.controller.captureOutputVolume()
+    }
+
+    func apply(_ snapshot: OutputVolumeSnapshot) -> SystemAudioVolumeController.ApplyOutcome {
+        self.controller.apply(snapshot)
+    }
+
+    func applyVirtualMainVolume(_ snapshot: OutputVolumeSnapshot) -> Bool {
+        self.controller.applyVirtualMainVolume(snapshot)
+    }
+
+    func reread(_ snapshot: OutputVolumeSnapshot) -> OutputVolumeSnapshot? {
+        self.controller.reread(snapshot)
     }
 }
 

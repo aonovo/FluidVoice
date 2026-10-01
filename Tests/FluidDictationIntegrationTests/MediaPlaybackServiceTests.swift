@@ -686,6 +686,66 @@ final class MediaPlaybackServiceTests: XCTestCase {
         XCTAssertEqual(volume.captureCount, 1)
     }
 
+    func testVolumeCallsStayOffTheMainThread() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        service.recordingStopped(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.8, 0.4])
+        XCTAssertGreaterThan(volume.applied.count, 0)
+        XCTAssertEqual(volume.callsOnMainThread, 0)
+    }
+
+    func testFailedRereadAfterDuckStillRestores() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        volume.rereadFailures = 2
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        // The device snapped to a coarser step than requested; with the applied level
+        // unknown, this must not read as a user change.
+        volume.current = self.levels([0.25, 0.125])
+        service.recordingStopped(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.8, 0.4])
+    }
+
+    func testTransientRereadFailureIsRetried() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        volume.rereadFailures = 1
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        let writesAfterDuck = volume.applied.count
+
+        volume.current = self.levels([0.6, 0.3])
+        service.recordingStopped(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.6, 0.3])
+        XCTAssertEqual(volume.applied.count, writesAfterDuck)
+    }
+
+    func testPartialDuckWithFailedUndoIsRestoredOnStop() async {
+        let transport = FakeMediaPlaybackTransport([self.state(true), self.state(false)])
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        // First fade step partial, final write partial, undo fails.
+        volume.applyOutcomes = [.partial, .partial, .failed]
+        volume.virtualMainSucceeds = false
+        let service = self.service(transport, volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        let commands = await transport.commands
+        XCTAssertEqual(commands, [.pause])
+
+        volume.current = self.levels([0.2, 0.4])
+        volume.virtualMainSucceeds = true
+        service.recordingStopped(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.8, 0.4])
+    }
+
     func testDisabledSuppressionDoesNotTouchVolume() async {
         let transport = FakeMediaPlaybackTransport([self.state(true)])
         let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
@@ -823,23 +883,29 @@ private actor FakeMediaPlaybackTransport: MediaPlaybackTransport {
 
 /// Simulates an output device: `current` is what capture and reread return, and every
 /// successful apply moves it. Queue `applyOutcomes` to make writes fail.
-private final nonisolated class FakeSystemAudioVolumeController: SystemAudioVolumeControlling {
+/// Tests only touch it between `waitUntilSettled()` calls, after the worker is idle.
+private final nonisolated class FakeSystemAudioVolumeController: SystemAudioVolumeControlling, @unchecked Sendable {
     var current: OutputVolumeSnapshot?
     var applyOutcomes: [SystemAudioVolumeController.ApplyOutcome] = []
+    var rereadFailures = 0
+    var virtualMainSucceeds = true
     private(set) var captureCount = 0
     private(set) var applied: [OutputVolumeSnapshot] = []
     private(set) var virtualMainLevels: [Float] = []
+    private(set) var callsOnMainThread = 0
 
     init(current: OutputVolumeSnapshot?) {
         self.current = current
     }
 
     func captureOutputVolume() -> OutputVolumeSnapshot? {
+        self.recordThread()
         self.captureCount += 1
         return self.current
     }
 
     func apply(_ snapshot: OutputVolumeSnapshot) -> SystemAudioVolumeController.ApplyOutcome {
+        self.recordThread()
         self.applied.append(snapshot)
         let outcome = self.applyOutcomes.isEmpty ? .applied : self.applyOutcomes.removeFirst()
         if outcome == .applied {
@@ -849,13 +915,26 @@ private final nonisolated class FakeSystemAudioVolumeController: SystemAudioVolu
     }
 
     func applyVirtualMainVolume(_ snapshot: OutputVolumeSnapshot) -> Bool {
+        self.recordThread()
         self.virtualMainLevels.append(snapshot.averageLevel)
+        guard self.virtualMainSucceeds else { return false }
         self.current = snapshot
         return true
     }
 
     func reread(_ snapshot: OutputVolumeSnapshot) -> OutputVolumeSnapshot? {
-        self.current
+        self.recordThread()
+        guard self.rereadFailures == 0 else {
+            self.rereadFailures -= 1
+            return nil
+        }
+        return self.current
+    }
+
+    private func recordThread() {
+        if Thread.isMainThread {
+            self.callsOnMainThread += 1
+        }
     }
 }
 
