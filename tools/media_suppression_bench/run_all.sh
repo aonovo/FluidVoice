@@ -6,7 +6,7 @@
 # and do not use the Mac while it runs (about 35 minutes).
 set -u
 HERE=${0:A:h}
-APPS=$HERE/../apps
+APPS=${APPS:-$HERE/../apps}
 DOMAIN=com.FluidApp.app.debug
 ORIG_INPUT=$(defaults read $DOMAIN PreferredInputDeviceUID)
 ORIG_OUTPUT="AirPods 4 aonovo"
@@ -16,6 +16,7 @@ restore() {
   $HERE/set-output "$ORIG_OUTPUT"
 }
 trap restore EXIT
+trap "exit 130" INT TERM
 # label | output device | input UID
 configs=(
   "airpods-same|AirPods 4 aonovo|08-5D-53-E2-FD-D2:input"

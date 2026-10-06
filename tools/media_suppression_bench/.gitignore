@@ -2,3 +2,4 @@ post-note
 set-output
 results/
 ../apps/
+__pycache__/

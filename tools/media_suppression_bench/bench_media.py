@@ -84,30 +84,30 @@ def dictation(record, gap):
     time.sleep(gap)
 
 
-WALL = re.compile(r"^\[(\d\d):(\d\d):(\d\d)\.(\d\d\d)\]")
-
-
 def mark():
-    """A log position that survives rotation: the wall-clock time of day."""
-    t = time.localtime()
-    return t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec - 1
+    """A log position that survives rotation: Fluid.log is renamed to Fluid.log.1
+    (same inode) when it reaches 1 MB, so remember the inode with the offset."""
+    stat = LOG.stat()
+    return (stat.st_ino, stat.st_size)
 
 
-def read_new(since):
-    """Lines logged at or after `since`, across Fluid.log.1 (rotated) and Fluid.log.
-    Lines without a timestamp inherit the previous line's time."""
-    lines, keep = [], False
-    for path in (LOG.with_name("Fluid.log.1"), LOG):
-        if not path.exists():
-            continue
-        for line in path.read_text("utf-8", "replace").splitlines():
-            m = WALL.match(line)
-            if m:
-                h, mi, sec, _ = map(int, m.groups())
-                keep = h * 3600 + mi * 60 + sec >= since
-            if keep:
-                lines.append(line)
-    return lines
+def read_from(path, offset):
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        return handle.read().decode("utf-8", "replace").splitlines()
+
+
+def read_new(position):
+    inode, offset = position
+    lines = []
+    if LOG.stat().st_ino != inode:
+        backup = LOG.with_name("Fluid.log.1")
+        if backup.exists() and backup.stat().st_ino == inode:
+            lines += read_from(backup, offset)
+        else:
+            print("  warning: log rotated more than once, some lines are lost")
+        offset = 0
+    return lines + read_from(LOG, offset)
 
 
 def parse(lines):
