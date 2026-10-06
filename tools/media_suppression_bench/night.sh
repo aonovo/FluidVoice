@@ -4,6 +4,7 @@
 set -u
 HERE=${0:A:h}
 DOMAIN=com.FluidApp.app.debug
+export APPS=${APPS:-$HERE/apps}
 caffeinate -dimsu -w $$ &
 osascript -e 'tell application "TextEdit" to activate' -e 'tell application "TextEdit" to make new document' >/dev/null
 sleep 1
