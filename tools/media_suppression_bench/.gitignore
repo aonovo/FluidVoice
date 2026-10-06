@@ -3,3 +3,4 @@ set-output
 results/
 ../apps/
 __pycache__/
+apps/
