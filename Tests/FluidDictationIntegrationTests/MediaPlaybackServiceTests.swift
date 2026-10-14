@@ -559,6 +559,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
         let service = self.service(transport, volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         XCTAssertEqual(volume.captureCount, 1)
         self.assertLevels(volume.current, [0.2, 0.1])
@@ -578,10 +579,76 @@ final class MediaPlaybackServiceTests: XCTestCase {
         XCTAssertTrue(commands.isEmpty)
     }
 
+    func testDuckWaitsUntilCaptureIsRunning() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.captureCount, 0)
+        XCTAssertTrue(volume.applied.isEmpty)
+
+        service.captureStarted(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.2, 0.1])
+    }
+
+    func testStopBeforeCaptureStartsNeverTouchesVolume() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.recordingStopped(sessionID: 1)
+        service.captureStarted(sessionID: 1)
+        service.sessionFinished(sessionID: 1)
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.captureCount, 0)
+        XCTAssertTrue(volume.applied.isEmpty)
+    }
+
+    func testCaptureStartOfOlderSessionDoesNotDuckNewerOne() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.recordingStarted(sessionID: 2, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.captureCount, 0)
+    }
+
+    func testFailedRestoreKeepsOriginalForNextSession() async {
+        let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
+        let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
+        service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
+        await service.waitUntilSettled()
+
+        // Restore on stop and on finish both fail: a fade step and the final write each.
+        volume.applyOutcomes = Array(repeating: .failed, count: 4)
+        volume.virtualMainSucceeds = false
+        service.recordingStopped(sessionID: 1)
+        await service.waitUntilSettled()
+        service.sessionFinished(sessionID: 1)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.2, 0.1])
+        XCTAssertTrue(volume.applyOutcomes.isEmpty)
+
+        // The next session keeps the owed original instead of ducking the lowered level.
+        volume.virtualMainSucceeds = true
+        service.recordingStarted(sessionID: 2, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 2)
+        await service.waitUntilSettled()
+        XCTAssertEqual(volume.captureCount, 1)
+        self.assertLevels(volume.current, [0.2, 0.1])
+
+        service.recordingStopped(sessionID: 2)
+        await service.waitUntilSettled()
+        self.assertLevels(volume.current, [0.8, 0.4])
+    }
+
     func testDuckFadeMovesMonotonicallyTowardTarget() async {
         let volume = FakeSystemAudioVolumeController(current: self.levels([1.0]))
         let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.2))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         let written = volume.applied.map { $0.channels[0].volume }
         XCTAssertEqual(written.last ?? -1, 0.2, accuracy: 0.0001)
@@ -593,6 +660,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
         let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         let writesAfterDuck = volume.applied.count
 
@@ -608,6 +676,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
         let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         let writesAfterDuck = volume.applied.count
 
@@ -623,6 +692,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let volume = FakeSystemAudioVolumeController(current: nil)
         let service = self.service(transport, volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         service.recordingStopped(sessionID: 1)
         service.sessionFinished(sessionID: 1)
@@ -638,6 +708,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         volume.applyOutcomes = Array(repeating: .failed, count: MediaPlaybackService.duckRampSteps)
         let service = self.service(transport, volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         self.assertLevels(volume.current, [0.8, 0.4])
         let commands = await transport.commands
@@ -653,8 +724,10 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
         let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         service.recordingStarted(sessionID: 2, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 2)
         await service.waitUntilSettled()
         XCTAssertEqual(volume.captureCount, 1)
         self.assertLevels(volume.current, [0.2, 0.1])
@@ -668,6 +741,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
         let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         service.sessionFinished(sessionID: 1)
         await service.waitUntilSettled()
@@ -678,10 +752,12 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
         let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         await service.shutdown()
         self.assertLevels(volume.current, [0.8, 0.4])
         service.recordingStarted(sessionID: 2, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 2)
         await service.waitUntilSettled()
         XCTAssertEqual(volume.captureCount, 1)
     }
@@ -690,6 +766,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let volume = FakeSystemAudioVolumeController(current: self.levels([0.8, 0.4]))
         let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         service.recordingStopped(sessionID: 1)
         await service.waitUntilSettled()
@@ -703,6 +780,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
         volume.rereadFailures = 2
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         // The device snapped to a coarser step than requested; with the applied level
         // unknown, this must not read as a user change.
@@ -717,6 +795,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         let service = self.service(FakeMediaPlaybackTransport([]), volume: volume)
         volume.rereadFailures = 1
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         let writesAfterDuck = volume.applied.count
 
@@ -735,6 +814,7 @@ final class MediaPlaybackServiceTests: XCTestCase {
         volume.virtualMainSucceeds = false
         let service = self.service(transport, volume: volume)
         service.recordingStarted(sessionID: 1, suppression: .duck(level: 0.25))
+        service.captureStarted(sessionID: 1)
         await service.waitUntilSettled()
         let commands = await transport.commands
         XCTAssertEqual(commands, [.pause])

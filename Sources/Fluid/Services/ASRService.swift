@@ -3132,6 +3132,8 @@ final class ASRService: ObservableObject {
                 "✅ Audio capture running after first PCM (session=\(captureSessionID))",
                 source: "ASRService"
             )
+            // Ducking starts only now, so it never overlaps microphone startup.
+            self.mediaPlaybackService.captureStarted(sessionID: captureSessionID)
             onCaptureStarted?()
 
             // Direct capture already owns a required device-liveness listener
