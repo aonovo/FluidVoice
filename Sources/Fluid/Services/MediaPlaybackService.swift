@@ -6,8 +6,9 @@ nonisolated enum MediaSuppression: Equatable, Sendable {
     case none
     /// Pause the Now Playing item and resume it once transcription finishes.
     case pause
-    /// Lower the default output device volume to `level` (a fraction of the volume at
-    /// recording start) and fade it back the moment recording stops.
+    /// Lower the default output device volume to `level` (a fraction of its current
+    /// volume) once the microphone is delivering audio, and fade it back the moment
+    /// recording stops.
     case duck(level: Float)
 
     var logDescription: String {
@@ -33,6 +34,14 @@ final class MediaPlaybackService {
         let id: Int
         let suppression: MediaSuppression
         var mayPause: Bool
+        var captureRunning = false
+
+        /// Ducking waits until capture is running, so no volume call can overlap
+        /// microphone startup. Pausing starts alongside it, as before.
+        var canSuppress: Bool {
+            guard case .duck = self.suppression else { return true }
+            return self.captureRunning
+        }
     }
 
     /// The output volume we lowered. `original` is what gets restored; `applied` is what
@@ -92,6 +101,15 @@ final class MediaPlaybackService {
         self.wake()
     }
 
+    /// The microphone delivered its first audio for this session.
+    func captureStarted(sessionID: Int) {
+        guard self.session?.id == sessionID, self.session?.captureRunning == false else { return }
+        self.session?.captureRunning = true
+        self.revision &+= 1
+        self.log("capture_started session=\(sessionID)")
+        self.wake()
+    }
+
     /// Prevent a slow query from issuing pause after the hotkey is released.
     /// A previously confirmed pause stays owned until transcription finishes;
     /// a ducked volume is faded back right away so music returns on key release.
@@ -141,7 +159,7 @@ final class MediaPlaybackService {
         while true {
             let observedRevision = self.revision
             if let session = self.session {
-                if session.mayPause, self.attemptedSession != session.id {
+                if session.mayPause, session.canSuppress, self.attemptedSession != session.id {
                     self.attemptedSession = session.id
                     await self.suppress(session)
                 } else if session.mayPause == false, self.duckedVolume != nil {
@@ -253,7 +271,10 @@ final class MediaPlaybackService {
             // channel from staying stuck at the ducked level.
             self.log("duck_restored context=\(context) via=virtual_main_volume")
         } else {
-            self.log("duck_restore_failed context=\(context) reason=output_device_unavailable")
+            // Keep the original owed, as a failed duck does: the next session must not
+            // capture the lowered level as its original, and the next stop tries again.
+            self.duckedVolume = DuckedVolume(original: ducked.original, applied: nil)
+            self.log("duck_restore_failed context=\(context) reason=output_device_unavailable restore=pending")
         }
     }
 
