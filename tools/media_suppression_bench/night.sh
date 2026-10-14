@@ -12,12 +12,11 @@ echo "== latency $(date +%T)"
 $HERE/run_all.sh "$@" || echo "latency bench stopped with $?"
 
 echo "== accuracy $(date +%T)"
-ORIG_INPUT=$(defaults read $DOMAIN PreferredInputDeviceUID)
 ORIG_OUTPUT=$(python3 -c "import sys; sys.path.insert(0, '$HERE'); import bench_media as b; print(b.output_device().get('output', ''))")
 $HERE/set-output "Динамики MacBook Pro"
 SPEAKER_VOLUME=$(osascript -e 'output volume of (get volume settings)')
 osascript -e 'set volume output volume 50'
-defaults write $DOMAIN PreferredInputDeviceUID BuiltInMicrophoneDevice
+python3 $HERE/bench_media.py set-mic BuiltInMicrophoneDevice
 pkill -f "FluidVoice Debug.app"; sleep 2
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 $LSREGISTER -f "$APPS/after/FluidVoice Debug.app"
@@ -27,7 +26,7 @@ osascript -e 'tell application "TextEdit" to activate'
 python3 $HERE/accuracy.py --music "$MUSIC" --label speakers || echo "accuracy stopped with $?"
 pkill -f "FluidVoice Debug.app"
 osascript -e "set volume output volume $SPEAKER_VOLUME"
-defaults write $DOMAIN PreferredInputDeviceUID "$ORIG_INPUT"
+python3 $HERE/bench_media.py restore-mic
 [[ -n "$ORIG_OUTPUT" ]] && $HERE/set-output "$ORIG_OUTPUT"
 [[ -d "$HERE/../../DerivedData/Build/Products/Debug/FluidVoice Debug.app" ]] && $LSREGISTER -f "$HERE/../../DerivedData/Build/Products/Debug/FluidVoice Debug.app"
 echo "== done $(date +%T)"

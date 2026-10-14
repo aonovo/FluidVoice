@@ -8,7 +8,6 @@ set -u
 HERE=${0:A:h}
 APPS=${APPS:-$HERE/apps}
 DOMAIN=com.FluidApp.app.debug
-ORIG_INPUT=$(defaults read $DOMAIN PreferredInputDeviceUID)
 ORIG_OUTPUT=$(python3 -c "import sys; sys.path.insert(0, '$HERE'); import bench_media as b; print(b.output_device().get('output', ''))")
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 DERIVED="$HERE/../../DerivedData/Build/Products/Debug/FluidVoice Debug.app"
@@ -30,28 +29,48 @@ launch_build() {
 restore() {
   pkill -f "FluidVoice Debug.app"
   [[ -d "$DERIVED" ]] && $LSREGISTER -f "$DERIVED"
-  defaults write $DOMAIN PreferredInputDeviceUID "$ORIG_INPUT"
+  python3 $HERE/bench_media.py restore-mic
   [[ -n "$ORIG_OUTPUT" ]] && $HERE/set-output "$ORIG_OUTPUT"
 }
 trap restore EXIT
 trap "exit 130" INT TERM
-# label | output device | input UID
+# A Bluetooth headset can be connected while its audio still goes to the phone; picking
+# it in the menu bar Sound menu turns it into a CoreAudio device.
+select_in_sound_menu() {
+  osascript - "$1" <<'APPLESCRIPT' >/dev/null
+on run argv
+  tell application "System Events" to tell process "ControlCenter"
+    click (first menu bar item of menu bar 1 whose description is "Звук" or description is "Sound")
+    delay 1.5
+    repeat with c in checkboxes of scroll area 1 of group 1 of window 1
+      if (value of attribute "AXIdentifier" of c as text) contains (item 1 of argv) then click c
+    end repeat
+  end tell
+  delay 3
+  tell application "System Events" to key code 53
+end run
+APPLESCRIPT
+}
+# label | output device | input UID | expected mic name in Fluid.log
 configs=(
-  "airpods-same|AirPods 4 aonovo|08-5D-53-E2-FD-D2:input"
-  "airpods-out-builtin-mic|AirPods 4 aonovo|BuiltInMicrophoneDevice"
-  "speakers-builtin-mic|Динамики MacBook Pro|BuiltInMicrophoneDevice"
+  "airpods-same|AirPods 4 aonovo|08-5D-53-E2-FD-D2:input|AirPods"
+  "airpods-out-builtin-mic|AirPods 4 aonovo|BuiltInMicrophoneDevice|MacBook"
+  "speakers-builtin-mic|Динамики MacBook Pro|BuiltInMicrophoneDevice|MacBook"
 )
 # Optional arguments pick configurations by label, e.g. ./run_all.sh speakers-builtin-mic
 for config in $configs; do
-  IFS='|' read -r label output input <<< "$config"
+  IFS='|' read -r label output input expected <<< "$config"
   (( $# == 0 )) || (( ${@[(Ie)$label]} )) || continue
-  $HERE/set-output "$output" || exit 1
-  defaults write $DOMAIN PreferredInputDeviceUID "$input"
+  if ! $HERE/set-output "$output"; then
+    select_in_sound_menu "$output"
+    $HERE/set-output "$output" || exit 1
+  fi
+  python3 $HERE/bench_media.py set-mic "$input"
   for build in before after; do
     pkill -f "FluidVoice Debug.app"; sleep 2
     launch_build $build
     osascript -e 'tell application "TextEdit" to activate'
-    python3 $HERE/bench_media.py run --modes none,pause,duck --count 20 --label "$label-$build" || exit 1
+    python3 $HERE/bench_media.py run --modes none,pause,duck --count 20 --label "$label-$build" --expect-input "$expected" || exit 1
   done
 done
 python3 $HERE/bench_media.py report $HERE/results/*-{before,after}.json(N)

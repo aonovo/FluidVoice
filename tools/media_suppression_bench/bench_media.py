@@ -4,8 +4,10 @@
 Drives the Debug app's own toggle path (FluidDebugRemoteToggleEnabled), then reads
 ~/Library/Logs/Fluid/Fluid.log for ASR_BENCH first_audio and MEDIA_BENCH lines.
 
-  bench_media.py run --modes none,pause,duck --count 20 --label builtin-before
+  bench_media.py set-mic BuiltInMicrophoneDevice   # FluidVoice picks the first entry of MicrophonePriority
+  bench_media.py run --modes none,pause,duck --count 20 --label builtin-before --expect-input MacBook
   bench_media.py report results/*.json
+  bench_media.py restore-mic
 """
 
 import argparse
@@ -24,6 +26,8 @@ POST = HERE / "post-note"
 TOGGLE = "com.FluidApp.debug.toggleRecording"
 
 FIELD = re.compile(r"(\w+)=(\S+)")
+CAPTURE_DEVICE = re.compile(r"device='([^']*)'")
+MIC_BACKUP = HERE / "results" / ".mic-priority-backup.json"
 
 
 def defaults_write(key, kind, value):
@@ -34,6 +38,47 @@ def set_mode(mode, level):
     defaults_write("PauseMediaDuringTranscription", "-bool", "NO" if mode == "none" else "YES")
     defaults_write("DuckMediaInsteadOfPausing", "-bool", "YES" if mode == "duck" else "NO")
     defaults_write("DuckMediaVolumeLevel", "-float", str(level))
+
+
+def read_defaults():
+    import plistlib
+
+    exported = subprocess.run(["defaults", "export", DOMAIN, "-"], capture_output=True, check=True).stdout
+    return plistlib.loads(exported)
+
+
+def write_priority(raw):
+    subprocess.run(["defaults", "write", DOMAIN, "MicrophonePriority", "-data", raw.hex()], check=True)
+
+
+def set_mic(uid):
+    """FluidVoice records from the first available entry of MicrophonePriority;
+    PreferredInputDeviceUID alone does not switch the microphone."""
+    settings = read_defaults()
+    raw = settings.get("MicrophonePriority", b"[]")
+    if not MIC_BACKUP.exists():
+        MIC_BACKUP.parent.mkdir(exist_ok=True)
+        MIC_BACKUP.write_bytes(raw)
+    entries = json.loads(raw)
+    entry = next((e for e in entries if e["uid"] == uid), {"uid": uid, "name": uid})
+    entries = [entry] + [e for e in entries if e["uid"] != uid]
+    write_priority(json.dumps(entries, ensure_ascii=False, separators=(",", ":")).encode())
+    defaults_write("PreferredInputDeviceUID", "-string", uid)
+    print(f"microphone priority -> {entry['name']} first")
+
+
+def restore_mic():
+    if MIC_BACKUP.exists():
+        write_priority(MIC_BACKUP.read_bytes())
+        MIC_BACKUP.unlink()
+        print("microphone priority restored")
+
+
+def output_volume():
+    out = subprocess.run(
+        ["osascript", "-e", "output volume of (get volume settings)"], capture_output=True, text=True
+    ).stdout.strip()
+    return int(out) if out.isdigit() else None
 
 
 def output_device():
@@ -125,6 +170,10 @@ def parse(lines):
             entry = sessions.setdefault(sid, {"coreaudio": []})
             entry.setdefault("elapsedMs", int(fields["elapsedMs"]))
             entry.setdefault("acquisitionMs", int(fields["acquisitionMs"]))
+        elif "device resolved" in line and current is not None:
+            match = CAPTURE_DEVICE.search(line)
+            if match:
+                sessions[current]["inputDevice"] = match.group(1)
         elif "MEDIA_BENCH" in line and current is not None:
             fields = dict(FIELD.findall(line))
             sessions[current]["coreaudio"].append(
@@ -147,7 +196,9 @@ def parse(lines):
 def run(args):
     if not POST.exists():
         sys.exit(f"missing {POST}; compile post-note.swift first")
-    results = {"label": args.label, "devices": output_device(), "modes": {}}
+    # "devices" is the system default input/output; the microphone FluidVoice records
+    # from is taken per session from its own log (inputDevice).
+    results = {"label": args.label, "devices": output_device(), "modes": {}, "volume": {}}
     print(f"devices: {results['devices']}")
     modes = args.modes.split(",")
     for mode in modes:
@@ -156,15 +207,24 @@ def run(args):
         for _ in range(args.warmup):
             dictation(args.record, args.gap)
         offset = mark()
-        print(f"[{mode}] {args.count} dictations, record {args.record}s, gap {args.gap}s")
+        baseline = output_volume()
+        after = []
+        print(f"[{mode}] {args.count} dictations, record {args.record}s, gap {args.gap}s, volume {baseline}")
         for index in range(args.count):
             dictation(args.record, args.gap)
+            after.append(output_volume())
             print(f"  {index + 1}/{args.count}", end="\r", flush=True)
         time.sleep(2.0)
         sessions = parse(read_new(offset))
         results["modes"][mode] = sessions
+        results["volume"][mode] = {"baseline": baseline, "after": after}
         got = [s for s in sessions.values() if "elapsedMs" in s]
-        print(f"  [{mode}] sessions with first_audio: {len(got)}/{args.count}")
+        mics = sorted({s.get("inputDevice", "unknown") for s in sessions.values()})
+        print(f"  [{mode}] sessions with first_audio: {len(got)}/{args.count}, mic: {', '.join(mics)}")
+        known = [mic for mic in mics if mic != "unknown"]
+        if args.expect_input and (not known or any(args.expect_input not in mic for mic in known)):
+            subprocess.run(["pkill", "-f", "FluidVoice Debug.app"])
+            sys.exit(f"wrong input: expected {args.expect_input!r}, recorded from {mics}")
     out = HERE / "results" / f"{args.label}.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(results, indent=2))
@@ -181,8 +241,8 @@ def pct(values, q):
 
 
 def report(paths):
-    print("\n| run | mode | n | first audio median ms | p95 | max | CoreAudio calls on main thread | CoreAudio per call median µs | max µs | duck ms | restore ms |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|")
+    print("\n| run | mode | mic | n | first audio median ms | p95 | max | CoreAudio calls on main thread | CoreAudio per call median µs | max µs | duck ms | restore ms | volume back |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for path in paths:
         data = json.loads(Path(path).read_text())
         for mode, sessions in data["modes"].items():
@@ -194,10 +254,17 @@ def report(paths):
             duck = [s["duckMs"] for s in sessions if "duckMs" in s]
             restore = [s["restoreMs"] for s in sessions if "restoreMs" in s]
             fmt = lambda v: "—" if not v else f"{statistics.median(v):.0f}"
+            mics = ", ".join(sorted({s.get("inputDevice", "?") for s in sessions}))
+            volume = data.get("volume", {}).get(mode)
+            if volume and volume["baseline"] is not None:
+                back = sum(1 for v in volume["after"] if v is not None and abs(v - volume["baseline"]) <= 1)
+                volume_back = f"{back}/{len(volume['after'])}"
+            else:
+                volume_back = "—"
             print(
-                f"| {data['label']} | {mode} | {len(elapsed)} | {fmt(elapsed)} | {pct(elapsed, 0.95) if elapsed else '—'} | "
+                f"| {data['label']} | {mode} | {mics} | {len(elapsed)} | {fmt(elapsed)} | {pct(elapsed, 0.95) if elapsed else '—'} | "
                 f"{max(elapsed) if elapsed else '—'} | {on_main}/{len(calls)} | {fmt(us)} | {max(us) if us else '—'} | "
-                f"{fmt(duck)} | {fmt(restore)} |"
+                f"{fmt(duck)} | {fmt(restore)} | {volume_back} |"
             )
 
 
@@ -212,11 +279,19 @@ def main():
     run_parser.add_argument("--level", type=float, default=0.25)
     run_parser.add_argument("--warmup", type=int, default=1)
     run_parser.add_argument("--label", required=True)
+    run_parser.add_argument("--expect-input", help="abort unless every session recorded from a mic containing this")
     report_parser = sub.add_parser("report")
     report_parser.add_argument("paths", nargs="+")
+    mic_parser = sub.add_parser("set-mic")
+    mic_parser.add_argument("uid")
+    sub.add_parser("restore-mic")
     args = parser.parse_args()
     if args.command == "run":
         run(args)
+    elif args.command == "set-mic":
+        set_mic(args.uid)
+    elif args.command == "restore-mic":
+        restore_mic()
     else:
         report(args.paths)
 
