@@ -20,14 +20,16 @@ then pick the level with **Volume While Dictating** (5–100 % of the current vo
 How it behaves:
 
 - Fades over ~120 ms instead of jumping, both down and back up.
+- Starts only once the microphone is delivering audio, so it never overlaps microphone startup
+  (Bluetooth headsets switch profile at that moment). Volume calls run off the main thread.
 - Volume comes back when you release the hotkey, not after transcription finishes.
 - If you change the volume (or mute) during a dictation, your choice is kept.
 - Does not depend on the Now Playing service, so it also quiets browser tabs, games and calls,
   and works on Intel Macs. If the output device has no adjustable volume, it falls back to pausing.
 - Per-channel balance is preserved; the last device that was ducked is the one restored, even if
-  the default output changed mid-dictation.
-- The start/stop sound cues never fight the duck: while ducking owns the system volume, the
-  cues' *Independent Volume* override is skipped.
+  the default output changed mid-dictation. If a restore fails, the original level is kept and
+  retried on the next stop instead of being lost.
+- Works best with headphones: through speakers the quieter music still reaches the microphone.
 
 Implementation: `SystemAudioVolumeController` (CoreAudio, adapted from upstream
 [PR #459](https://github.com/altic-dev/FluidVoice/pull/459) by akar016012) and a `duck` mode inside
@@ -85,7 +87,14 @@ cp -R dist/FluidVoice.app /Applications/
 ```
 
 The Release build is **not notarized**. That is fine for the Mac it was built on (no quarantine
-flag, Gatekeeper never asks). To share the app with other Macs, notarize it with `notarytool` first.
+flag, Gatekeeper never asks). To share the app with other Macs, notarize it and build a disk image:
+
+```bash
+# once: store an app-specific password for your Apple ID in the keychain
+xcrun notarytool store-credentials <profile> --apple-id <apple-id> --team-id <team-id>
+
+./scripts/notarize-release.sh <profile>   # staples dist/FluidVoice.app, builds dist/FluidVoice-<version>.dmg
+```
 
 If you installed upstream through Homebrew, run `brew uninstall --cask fluidvoice` first so a later
 `brew upgrade` does not put upstream back. After replacing the app, macOS will ask for Accessibility
@@ -96,9 +105,6 @@ and Microphone again, because the signing identity differs from upstream's.
 - Dictating into a terminal TUI (Claude Code in cmux, Ghostty, tmux)? Set Settings → Dictation →
   **Text Insertion Mode** to **Clipboard Paste**; the default key-event path is swallowed by those
   apps (upstream [#479](https://github.com/altic-dev/FluidVoice/issues/479)).
-- Keep **Independent Volume** for the sound cues off: it rewrites the system volume for every cue
-  and is the cause of the volume spike reported in upstream
-  [#522](https://github.com/altic-dev/FluidVoice/issues/522).
 - Ducking activity is logged in `~/Library/Logs/Fluid/Fluid.log` as `MEDIA_CONTROL duck_*` lines.
 
 ## Known issues

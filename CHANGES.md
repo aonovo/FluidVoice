@@ -28,3 +28,32 @@ this file lists the modifications and their dates; `git log upstream/main..main`
   `MenuBarManager.swift`, `SettingsView.swift` now query `aonovo/FluidVoice` releases.
 - **docs:** fork README (original kept as `UPSTREAM-README.md`), this file,
   `scripts/build-release.sh`, `dist/` ignored.
+
+## 2026-09-24 — rebased onto upstream `main` @ a0f4f4b (1.6.10-beta.7)
+
+- **feat(media)** ported onto upstream's media reconciler (#957): ducking is the `duck` mode of
+  `MediaSuppression`, handled with the reconciler's session tracking and shutdown. The
+  `TranscriptionSoundPlayer` change was dropped, upstream #989 removed Independent Volume.
+- **fix(build):** split three upstream expressions the Xcode 26.2 type checker gives up on.
+- **fix(ui):** `ReleaseHighlightsPresenter.WindowReference` is `nonisolated`; its isolated deinit
+  crashed the test host on macOS 15 (swiftlang/swift#85663).
+
+## 2026-10-01 — ducking and microphone timing (review on upstream PR #459)
+
+- **perf(media):** every CoreAudio volume read/write goes through `OutputVolumeWorker`, an actor
+  on its own serial queue, instead of the main actor. A failed post-duck reread no longer
+  suppresses the restore; a partial duck that cannot be undone is restored on stop.
+- **chore(media):** Debug builds log each volume call (`MEDIA_BENCH`) with duration and thread.
+- **feat(media):** the ducking setting notes that it works best with headphones.
+- **chore(tools):** `tools/media_suppression_bench/`, a latency and accuracy bench for the media
+  suppression modes (fork only).
+
+## 2026-10-14 — ducking waits for the microphone
+
+- **fix(media):** ducking starts only after `ASRService` reports the first PCM buffer
+  (`MediaPlaybackService.captureStarted`), so no volume call overlaps microphone startup; a
+  restore that fails keeps the original level owed. Four new tests. Modified: `ASRService.swift`,
+  `MediaPlaybackService.swift`, `MediaPlaybackServiceTests.swift`.
+- **chore(tools):** the bench picks the microphone through `MicrophonePriority` and checks which
+  microphone each session used and that the volume came back.
+- **docs:** `scripts/notarize-release.sh` notarizes the Release build and builds a disk image.
